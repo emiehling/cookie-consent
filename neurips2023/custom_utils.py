@@ -1,62 +1,67 @@
+import json
 import numpy as np
+# import matplotlib.pyplot as plt
 from scipy.special import binom
-import torch
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-from global_parameters import *
-
-def get_affinity_means():
-    # Generates synthetic mean affinity values for each user attribute. This is a substitute for a dataset of affinity
-    # values for different demographics.
-    #
-    # Note: mean of normal distribution is mean_array[i] * num_topics
-
-    # Number of user attributes
-    num_attributes = len(TOPIC_MEANS)
-
-    weights = np.zeros((NUM_TOPICS, num_attributes))
-    for att in range(num_attributes):
-        s = np.digitize(np.random.normal(TOPIC_MEANS[att] * NUM_TOPICS, NUM_TOPICS / 10.0, 10000), range(NUM_TOPICS-1))
-        unique_values = np.unique(s)
-        counts = np.array([np.count_nonzero(s == val) for val in unique_values])
-        w = counts / max(counts)
-        for i, val in enumerate(unique_values):
-            weights[val, att] = w[i]
-
-    return weights
+# import torch
+# device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-def ad_with_max_expected_probability_of_click(ads, topic, user_attribute):
-    # Returns the ad of a given topic from a set of ads with the highest probability of being clicked. Assumes knowledge
-    # of user choice model and user attribute
+def get_topic_affinity_params(num_cohorts, num_topics, similarity):
+    """
+    Generates parameters for log-normal distributions representing topic affinities for different cohorts.
 
-    N_samples = 250
-    expected_utility = np.zeros(len(ads))
-    for i, (_, ad) in enumerate(ads.items()):
+    This function creates a set of mean and standard deviation parameters for each cohort's topic affinity distribution.
+    The means are generated such that the first cohort gets a baseline mean, and subsequent cohorts have their means
+    adjusted based on the similarity coefficient. A higher similarity coefficient results in closer means between
+    cohorts, while a lower coefficient increases the difference between their means. The standard deviations are assumed
+    to be the same across all cohorts and topics.
 
-        # Compute expected quality utility given user_attribute for ad i
-        sample_quality_utility = []
-        for j in range(N_samples):
-            score_sample = UserStateSampler.generate_user_preference_score(user_attribute)
-            sample_quality_utility.append(score_sample * (1 - 2*score_sample)*float(ad['quality']) + score_sample)
-        expected_quality_utility = 1/N_samples * sum(sample_quality_utility)
+    This function is a substitute for real topic affinity data across cohorts.
 
-        # Compute expected topic affinity utility given user_attribute for ad i
-        sample_topic_affinity_utility = []
-        for j in range(N_samples):
-            affinity_sample = UserStateSampler.generate_user_topic_affinity(user_attribute)
-            sample_topic_affinity_utility.append(affinity_sample[ad['topic']])
-        expected_topic_affinity_utility = 1 / N_samples * sum(sample_topic_affinity_utility)
+    Parameters:
+    num_cohorts (int): number of cohorts to generate parameters for.
+    num_topics (int): number of topics for which to generate affinity parameters.
+    similarity_coefficient (float): value in  [0, 1] that controls the degree of similarity in means across cohorts.
 
-        # Expected utility for ad i
-        expected_utility[i] = np.exp(expected_quality_utility + expected_topic_affinity_utility)
+    Returns:
+    list: A list of dictionaries, where each dictionary contains 'means' and 'std_devs' keys with corresponding
+          parameters for the log-normal distributions of topic affinities for a cohort.
+    """
+    baseline_means = np.random.rand(num_topics)
+    delta = (np.random.rand(num_topics) - 0.5) / 5  # Small increment
+    affinity_means = []
+    affinity_stds = []
+    for i in range(num_cohorts):
+        if i == 0:
+            means = baseline_means
+        else:
+            means = baseline_means + i * delta * (1 - similarity)
+        std_devs = np.random.rand(num_topics)
+        affinity_means.append(means)
+        affinity_stds.append(std_devs)
 
-    # Recommend ad with largest expected utility (slate array of size 1)
-    return [np.argmax(expected_utility)]
+    return np.array(affinity_means), np.array(affinity_stds)
 
 
-def score_ad(topic_affinity):
-    return topic_affinity ** 2
+# def get_affinity_means():
+#     # Generates synthetic mean affinity values for each user attribute. This is a substitute for a dataset of affinity
+#     # values for different demographics.
+#     #
+#     # Note: mean of normal distribution is mean_array[i] * num_topics
+#
+#     # Number of user attributes
+#     num_attributes = len(TOPIC_MEANS)
+#
+#     weights = np.zeros((NUM_TOPICS, num_attributes))
+#     for att in range(num_attributes):
+#         s = np.digitize(np.random.normal(TOPIC_MEANS[att] * NUM_TOPICS, NUM_TOPICS / 10.0, 10000), range(NUM_TOPICS-1))
+#         unique_values = np.unique(s)
+#         counts = np.array([np.count_nonzero(s == val) for val in unique_values])
+#         w = counts / max(counts)
+#         for i, val in enumerate(unique_values):
+#             weights[val, att] = w[i]
+#
+#     return weights
 
 
 def kl_divergence(p, q):
@@ -70,18 +75,6 @@ def kl_divergence(p, q):
     p = p/sum(p)
     q = q/sum(q)
     return sum(p[i] * np.log2(p[i]/q[i]) for i in range(len(p)))
-
-
-
-def agent_reward_function(responses):
-    # Definition of agent reward function
-    reward = 0.0
-    for response in responses:
-        reward += response[0].click            # Click reward
-        # if response.click:                  # Engagement reward
-        #     reward += response.engagement
-    return reward
-
 
 
 def sample_user_responses(environment, action_space, num_samples):
@@ -184,7 +177,6 @@ class MF():
         return self.P.dot(self.Q.T)
 
 
-
 def get_estimated_factors(responses, expected_probabilities):#, current_user_features, current_ad_features):
     '''
     Estimates latent factors from user responses via confidence-weighted MF procedure.
@@ -232,16 +224,16 @@ def get_estimated_factors(responses, expected_probabilities):#, current_user_fea
     non_nan_mask = (filter_matrix != -1)
 
     # Compute confidence weights for matrix factorization procedure
+    # confidences = (user_topic_response_matrix>=0).astype(int)
     confidences = binom(user_topic_impressions_matrix, user_topic_response_matrix) * \
                   expected_probabilities ** user_topic_response_matrix * \
                   (1 - expected_probabilities) ** (user_topic_impressions_matrix - user_topic_response_matrix)
 
-    num_training_iterations = 500000
+    num_training_iterations = 5000#500000
     mf = MF(user_topic_response_matrix, NUM_FEATURES, confidences, non_nan_mask, learning_rate=0.01, reg=0.01, iterations=num_training_iterations)
     training_errors = mf.train()
 
     return mf.P, mf.Q, training_errors
-
 
 
 def get_slates(user_factor_matrix, ad_factor_matrix, ad_pool):
@@ -276,7 +268,7 @@ def get_slates(user_factor_matrix, ad_factor_matrix, ad_pool):
 
 def get_cohort_prior_beliefs(env):
     '''
-    Cohort prior is computed using knowledge of opt-in signal and cookie value.
+    Cohort prior is computed using knowledge of consent signal and cookie value.
 
     :param env: given environment
     '''
@@ -287,23 +279,23 @@ def get_cohort_prior_beliefs(env):
 
         user_cookie_cohort_dist = env.environment.user_model[i].user_state.user_cookie_cohort_dist  # uniform across users
         user_marginal_on_cohort = np.sum(user_cookie_cohort_dist, axis=0)
-        user_opt_in = env.environment.user_model[i].user_state.user_opt_in
+        user_consent = env.environment.user_model[i].user_state.user_consent
 
         # Compute cohort distribution for user i
-        if user_opt_in:  # then cookie is revealed to agent
+        if user_consent:  # then cookie is revealed to agent
             cookie = env.environment.user_model[i].user_state.user_cookie
             for cohort in range(NUM_COHORTS):
                 # todo: simplify expressions (obvious cancellations)
                 prob_cookie_given_cohort = user_cookie_cohort_dist[cookie][cohort] / user_marginal_on_cohort[cohort]
-                prob_opt_in_given_cohort = env.environment.user_model[i].user_state.user_opt_in_dist[cohort]
-                cohort_beliefs[i, cohort] = prob_cookie_given_cohort * prob_opt_in_given_cohort * user_marginal_on_cohort[cohort]
+                prob_consent_given_cohort = env.environment.user_model[i].user_state.user_consent_dist[cohort]
+                cohort_beliefs[i, cohort] = prob_cookie_given_cohort * prob_consent_given_cohort * user_marginal_on_cohort[cohort]
             cohort_beliefs[i, :] = cohort_beliefs[i, :] / sum(cohort_beliefs[i, :])
             # normalization = sum(user_cookie_cohort_dist[cookie])
             # cohort_beliefs[i, :] = np.array([user_cookie_cohort_dist[cookie][i] / normalization for i in range(NUM_COHORTS)])
         else:  # then cookie is not revealed to agent
             for cohort in range(NUM_COHORTS):
-                prob_not_opt_in_given_cohort = 1 - env.environment.user_model[i].user_state.user_opt_in_dist[cohort]
-                cohort_beliefs[i, cohort] =  prob_not_opt_in_given_cohort * user_marginal_on_cohort[cohort]
+                prob_not_consent_given_cohort = 1 - env.environment.user_model[i].user_state.user_consent_dist[cohort]
+                cohort_beliefs[i, cohort] =  prob_not_consent_given_cohort * user_marginal_on_cohort[cohort]
             cohort_beliefs[i, :] = cohort_beliefs[i, :] / sum(cohort_beliefs[i, :])
 
     return cohort_beliefs
@@ -381,3 +373,11 @@ def update_cohort_beliefs(env, responses, prior_cohort_beliefs):
 
     return posterior_cohort_beliefs
 
+
+def generate_cookie_cohort_matrix(n):
+    y = 1 / (n + n ** 2)
+    x = 2 * y
+    matrix = np.full((n, n), y)
+    for i in range(n):
+        matrix[i][i] = x
+    return matrix
