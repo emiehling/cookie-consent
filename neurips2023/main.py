@@ -36,12 +36,7 @@ def create_agent(environment, env_config, eval_mode):
     agent_params = env_config['agent']
     agent_name = agent_params['name']
 
-    if agent_name == 'bandit-mf':
-        return bandit_mf_agent.BanditMFAgent(agent_params,
-                                             observation_space=environment.observation_space,
-                                             action_space=environment.action_space,
-                                             **kwargs)
-    elif agent_name == 'random-multi':
+    if agent_name == 'random-multi':
         return random_agent_multi.RandomAgentMulti(action_space=environment.action_space,
                                                    random_seed=0)
     else:
